@@ -48,25 +48,27 @@ func Flags() []xo.FlagSet {
 
 // Loader loads type information from a database.
 type Loader struct {
-	Type             string
-	Mask             string
-	Flags            func() []xo.Flag
-	Schema           func(context.Context, models.DB) (string, error)
-	Enums            func(context.Context, models.DB, string) ([]*models.Enum, error)
-	EnumValues       func(context.Context, models.DB, string, string) ([]*models.EnumValue, error)
-	Procs            func(context.Context, models.DB, string) ([]*models.Proc, error)
-	ProcParams       func(context.Context, models.DB, string, string) ([]*models.ProcParam, error)
-	Tables           func(context.Context, models.DB, string, string) ([]*models.Table, error)
-	TableColumns     func(context.Context, models.DB, string, string) ([]*models.Column, error)
-	TableSequences   func(context.Context, models.DB, string, string) ([]*models.Sequence, error)
-	TableForeignKeys func(context.Context, models.DB, string, string) ([]*models.ForeignKey, error)
-	TableIndexes     func(context.Context, models.DB, string, string) ([]*models.Index, error)
-	IndexColumns     func(context.Context, models.DB, string, string, string) ([]*models.IndexColumn, error)
-	ViewCreate       func(context.Context, models.DB, string, string, []string) (sql.Result, error)
-	ViewSchema       func(context.Context, models.DB, string) (string, error)
-	ViewTruncate     func(context.Context, models.DB, string, string) (sql.Result, error)
-	ViewDrop         func(context.Context, models.DB, string, string) (sql.Result, error)
-	ViewStrip        func([]string, []string) ([]string, []string, []string, error)
+	Type               string
+	Mask               string
+	Flags              func() []xo.Flag
+	Schema             func(context.Context, models.DB) (string, error)
+	Enums              func(context.Context, models.DB, string) ([]*models.Enum, error)
+	EnumValues         func(context.Context, models.DB, string, string) ([]*models.EnumValue, error)
+	CompositeTypes     func(context.Context, models.DB, string) ([]*models.CompositeType, error)
+	CompositeTypeAttrs func(context.Context, models.DB, string, string) ([]*models.CompositeTypeAttr, error)
+	Procs              func(context.Context, models.DB, string) ([]*models.Proc, error)
+	ProcParams         func(context.Context, models.DB, string, string) ([]*models.ProcParam, error)
+	Tables             func(context.Context, models.DB, string, string) ([]*models.Table, error)
+	TableColumns       func(context.Context, models.DB, string, string) ([]*models.Column, error)
+	TableSequences     func(context.Context, models.DB, string, string) ([]*models.Sequence, error)
+	TableForeignKeys   func(context.Context, models.DB, string, string) ([]*models.ForeignKey, error)
+	TableIndexes       func(context.Context, models.DB, string, string) ([]*models.Index, error)
+	IndexColumns       func(context.Context, models.DB, string, string, string) ([]*models.IndexColumn, error)
+	ViewCreate         func(context.Context, models.DB, string, string, []string) (sql.Result, error)
+	ViewSchema         func(context.Context, models.DB, string) (string, error)
+	ViewTruncate       func(context.Context, models.DB, string, string) (sql.Result, error)
+	ViewDrop           func(context.Context, models.DB, string, string) (sql.Result, error)
+	ViewStrip          func([]string, []string) ([]string, []string, []string, error)
 }
 
 // get retrieves the database connection, loader, and schema name from the
@@ -131,6 +133,30 @@ func EnumValues(ctx context.Context, enum string) ([]*models.EnumValue, error) {
 		return nil, err
 	}
 	return l.EnumValues(ctx, db, schema, enum)
+}
+
+// CompositeTypes returns the database composite types.
+func CompositeTypes(ctx context.Context) ([]*models.CompositeType, error) {
+	db, l, schema, err := get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if l.CompositeTypes == nil {
+		return nil, nil // Not supported for this database type
+	}
+	return l.CompositeTypes(ctx, db, schema)
+}
+
+// CompositeTypeAttrs returns the database composite type attributes.
+func CompositeTypeAttrs(ctx context.Context, typeName string) ([]*models.CompositeTypeAttr, error) {
+	db, l, schema, err := get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if l.CompositeTypeAttrs == nil {
+		return nil, nil // Not supported for this database type
+	}
+	return l.CompositeTypeAttrs(ctx, db, schema, typeName)
 }
 
 // Procs returns the database procs.

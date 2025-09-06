@@ -2,10 +2,13 @@ package loader
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"github.com/kenshaw/snaker"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/xo/dbtpl/models"
 	xo "github.com/xo/dbtpl/types"
@@ -13,23 +16,25 @@ import (
 
 func init() {
 	Register("postgres", Loader{
-		Mask:             "$%d",
-		Flags:            PostgresFlags,
-		Schema:           models.PostgresSchema,
-		Enums:            models.PostgresEnums,
-		EnumValues:       models.PostgresEnumValues,
-		Procs:            models.PostgresProcs,
-		ProcParams:       models.PostgresProcParams,
-		Tables:           models.PostgresTables,
-		TableColumns:     PostgresTableColumns,
-		TableSequences:   models.PostgresTableSequences,
-		TableForeignKeys: models.PostgresTableForeignKeys,
-		TableIndexes:     models.PostgresTableIndexes,
-		IndexColumns:     PostgresIndexColumns,
-		ViewCreate:       models.PostgresViewCreate,
-		ViewSchema:       models.PostgresViewSchema,
-		ViewDrop:         models.PostgresViewDrop,
-		ViewStrip:        PostgresViewStrip,
+		Mask:               "$%d",
+		Flags:              PostgresFlags,
+		Schema:             models.PostgresSchema,
+		Enums:              models.PostgresEnums,
+		EnumValues:         models.PostgresEnumValues,
+		CompositeTypes:     models.PostgresCompositeTypes,
+		CompositeTypeAttrs: models.PostgresCompositeTypeAttrs,
+		Procs:              models.PostgresProcs,
+		ProcParams:         models.PostgresProcParams,
+		Tables:             models.PostgresTables,
+		TableColumns:       PostgresTableColumns,
+		TableSequences:     models.PostgresTableSequences,
+		TableForeignKeys:   models.PostgresTableForeignKeys,
+		TableIndexes:       models.PostgresTableIndexes,
+		IndexColumns:       PostgresIndexColumns,
+		ViewCreate:         models.PostgresViewCreate,
+		ViewSchema:         models.PostgresViewSchema,
+		ViewDrop:           models.PostgresViewDrop,
+		ViewStrip:          PostgresViewStrip,
 	})
 }
 
@@ -267,4 +272,193 @@ const oidsKey xo.ContextKey = "oids"
 func enableOids(ctx context.Context) bool {
 	b, _ := ctx.Value(oidsKey).(bool)
 	return b
+}
+
+// Composite type cache to avoid repeated database queries
+var (
+	compositeTypeCache      = make(map[string]map[string]bool)
+	compositeTypeCacheMutex sync.RWMutex
+)
+
+// isCompositeType checks if the given type is a composite type in the specified schema.
+// It uses a cache to avoid repeated database queries during type resolution.
+func isCompositeType(ctx context.Context, typeName, schema string) bool {
+	// Handle schema-prefixed types
+	if strings.Contains(typeName, ".") {
+		parts := strings.SplitN(typeName, ".", 2)
+		if len(parts) == 2 {
+			schema, typeName = parts[0], parts[1]
+		}
+	}
+
+	// Check cache first
+	compositeTypeCacheMutex.RLock()
+	if schemaCache, ok := compositeTypeCache[schema]; ok {
+		if isComposite, exists := schemaCache[typeName]; exists {
+			compositeTypeCacheMutex.RUnlock()
+			return isComposite
+		}
+	}
+	compositeTypeCacheMutex.RUnlock()
+
+	// Cache miss - need to load composite types for this schema
+	return loadCompositeTypeCache(ctx, schema, typeName)
+}
+
+// loadCompositeTypeCache loads all composite types for a schema into the cache
+// and returns whether the specific typeName is a composite type.
+func loadCompositeTypeCache(ctx context.Context, schema, typeName string) bool {
+	// Get database connection from context
+	db, ok := ctx.Value(xo.DbKey).(*sql.DB)
+	if !ok {
+		return false // No database connection available
+	}
+
+	// Load all composite types for this schema
+	compositeTypes, err := models.PostgresCompositeTypes(ctx, db, schema)
+	if err != nil {
+		return false // Error loading composite types
+	}
+
+	// Update cache
+	compositeTypeCacheMutex.Lock()
+	defer compositeTypeCacheMutex.Unlock()
+
+	if compositeTypeCache[schema] == nil {
+		compositeTypeCache[schema] = make(map[string]bool)
+	}
+
+	// Mark all found composite types
+	isComposite := false
+	for _, ct := range compositeTypes {
+		compositeTypeCache[schema][ct.TypeName] = true
+		if ct.TypeName == typeName {
+			isComposite = true
+		}
+	}
+
+	// If we didn't find the specific type, cache that it's NOT a composite type
+	if !isComposite {
+		compositeTypeCache[schema][typeName] = false
+	}
+
+	return isComposite
+}
+
+// compositeGoType handles Go type mapping for composite types.
+func compositeGoType(typeName string, nullable bool, schema string) (string, string) {
+	// Remove schema prefix if it matches the current schema
+	if strings.HasPrefix(typeName, schema+".") {
+		typeName = typeName[len(schema)+1:]
+	}
+
+	// Convert to Go type name (CamelCase)
+	goType := snaker.SnakeToCamelIdentifier(typeName)
+	zero := goType + "{}"
+
+	// Handle nullable composite types with pointer
+	if nullable {
+		return "*" + goType, "nil"
+	}
+
+	return goType, zero
+}
+
+// PostgresGoTypeWithContext is a context-aware version of PostgresGoType
+// that can detect composite types. This is used internally when context is available.
+func PostgresGoTypeWithContext(ctx context.Context, d xo.Type, schema, itype string) (string, string, error) {
+	// SETOF -> []T
+	if strings.HasPrefix(d.Type, "SETOF ") {
+		d.Type = d.Type[len("SETOF "):]
+		goType, _, err := PostgresGoTypeWithContext(ctx, d, schema, itype)
+		if err != nil {
+			return "", "", err
+		}
+		return "[]" + goType, "nil", nil
+	}
+
+	// If it's an array, the underlying type shouldn't also be set as an array
+	typNullable := d.Nullable && !d.IsArray
+
+	// special type handling
+	typ := d.Type
+	switch {
+	case typ == `"char"`:
+		typ = "char"
+	case strings.HasPrefix(typ, "information_schema."):
+		switch strings.TrimPrefix(typ, "information_schema.") {
+		case "cardinal_number":
+			typ = "integer"
+		case "character_data", "sql_identifier", "yes_or_no":
+			typ = "character varying"
+		case "time_stamp":
+			typ = "timestamp with time zone"
+		}
+	}
+
+	var goType, zero string
+	switch typ {
+	case "boolean":
+		goType, zero = "bool", "false"
+		if typNullable {
+			goType, zero = "sql.NullBool", "sql.NullBool{}"
+		}
+	case "bpchar", "character varying", "character", "inet", "money", "text", "name":
+		goType, zero = "string", `""`
+		if typNullable {
+			goType, zero = "sql.NullString", "sql.NullString{}"
+		}
+	case "smallint":
+		goType, zero = "int16", "0"
+		if typNullable {
+			goType, zero = "sql.NullInt64", "sql.NullInt64{}"
+		}
+	case "integer":
+		goType, zero = itype, "0"
+		if typNullable {
+			goType, zero = "sql.NullInt64", "sql.NullInt64{}"
+		}
+	case "bigint":
+		goType, zero = "int64", "0"
+		if typNullable {
+			goType, zero = "sql.NullInt64", "sql.NullInt64{}"
+		}
+	case "real":
+		goType, zero = "float32", "0.0"
+		if typNullable {
+			goType, zero = "sql.NullFloat64", "sql.NullFloat64{}"
+		}
+	case "double precision", "numeric":
+		goType, zero = "float64", "0.0"
+		if typNullable {
+			goType, zero = "sql.NullFloat64", "sql.NullFloat64{}"
+		}
+	case "date", "timestamp with time zone", "time with time zone", "time without time zone", "timestamp without time zone":
+		goType, zero = "time.Time", "time.Time{}"
+		if typNullable {
+			goType, zero = "sql.NullTime", "sql.NullTime{}"
+		}
+	case "bit":
+		goType, zero = "uint8", "0"
+		if typNullable {
+			goType, zero = "*uint8", "nil"
+		}
+	case "any", "bit varying", "bytea", "interval", "json", "jsonb", "xml":
+		goType, zero = "[]byte", "nil"
+	case "hstore":
+		goType, zero = "hstore.Hstore", "nil"
+	case "uuid":
+		goType, zero = "uuid.UUID", "uuid.UUID{}"
+		if typNullable {
+			goType, zero = "uuid.NullUUID", "uuid.NullUUID{}"
+		}
+	default:
+		// Check if it's a composite type before falling back to schemaType
+		if isCompositeType(ctx, d.Type, schema) {
+			goType, zero = compositeGoType(d.Type, typNullable, schema)
+		} else {
+			goType, zero = schemaType(d.Type, typNullable, schema)
+		}
+	}
+	return goType, zero, nil
 }
