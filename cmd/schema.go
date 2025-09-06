@@ -27,6 +27,9 @@ func loadSchema(ctx context.Context, set *xo.Set, args *Args) error {
 	if schema.Enums, err = loadEnums(ctx, args); err != nil {
 		return err
 	}
+	if schema.CompositeTypes, err = loadCompositeTypes(ctx, args); err != nil { // ADD THIS LINE
+		return err
+	}
 	if schema.Procs, err = loadProcs(ctx, args); err != nil {
 		return err
 	}
@@ -92,6 +95,74 @@ func loadEnumValues(ctx context.Context, _ *Args, enum *xo.Enum) error {
 			ConstValue: &val.ConstValue,
 		})
 	}
+	return nil
+}
+
+// loadCompositeTypes loads composite types.
+func loadCompositeTypes(ctx context.Context, args *Args) ([]xo.CompositeType, error) {
+	// load composite types
+	compositeTypes, err := loader.CompositeTypes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if compositeTypes == nil {
+		return nil, nil // Not supported for this database type
+	}
+
+	sort.Slice(compositeTypes, func(i, j int) bool {
+		return compositeTypes[i].TypeName < compositeTypes[j].TypeName
+	})
+
+	// process composite types
+	var composites []xo.CompositeType
+	for _, ct := range compositeTypes {
+		if !validType(args, false, ct.TypeName) {
+			continue
+		}
+
+		composite := xo.CompositeType{
+			Name:    ct.TypeName,
+			Schema:  ct.SchemaName,
+			Comment: ct.Comment,
+		}
+
+		// Load attributes for this composite type
+		if err := loadCompositeTypeAttrs(ctx, args, &composite); err != nil {
+			return nil, err
+		}
+
+		composites = append(composites, composite)
+	}
+	return composites, nil
+}
+
+// loadCompositeTypeAttrs loads attributes for a composite type.
+func loadCompositeTypeAttrs(ctx context.Context, args *Args, ct *xo.CompositeType) error {
+	driver, _, _ := xo.DriverDbSchema(ctx)
+
+	// load composite type attributes
+	attrs, err := loader.CompositeTypeAttrs(ctx, ct.Name)
+	if err != nil {
+		return err
+	}
+
+	// process attributes
+	for _, attr := range attrs {
+		d, err := xo.ParseType(attr.DataType, driver)
+		if err != nil {
+			return err
+		}
+
+		// Set nullable based on not_null flag (opposite logic)
+		d.Nullable = !attr.NotNull
+
+		ct.Attributes = append(ct.Attributes, xo.Field{
+			Name:    attr.AttrName,
+			Type:    d,
+			Comment: attr.Comment,
+		})
+	}
+
 	return nil
 }
 
