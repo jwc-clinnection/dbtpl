@@ -46,12 +46,13 @@ func (q Query) MarshalYAML() (any, error) {
 
 // Schema is a SQL schema.
 type Schema struct {
-	Driver string  `json:"type,omitempty"`
-	Name   string  `json:"name,omitempty"`
-	Enums  []Enum  `json:"enums,omitempty"`
-	Procs  []Proc  `json:"procs,omitempty"`
-	Tables []Table `json:"tables,omitempty"`
-	Views  []Table `json:"views,omitempty"`
+	Driver         string          `json:"type,omitempty"`
+	Name           string          `json:"name,omitempty"`
+	Enums          []Enum          `json:"enums,omitempty"`
+	CompositeTypes []CompositeType `json:"composite_types,omitempty"`
+	Procs          []Proc          `json:"procs,omitempty"`
+	Tables         []Table         `json:"tables,omitempty"`
+	Views          []Table         `json:"views,omitempty"`
 }
 
 // EnumByName returns a enum by its name.
@@ -68,6 +69,14 @@ func (s Schema) EnumByName(name string) *Enum {
 type Enum struct {
 	Name   string  `json:"name,omitempty"`
 	Values []Field `json:"values,omitempty"`
+}
+
+// CompositeType is a composite type.
+type CompositeType struct {
+	Name       string  `json:"name,omitempty"`
+	Schema     string  `json:"schema,omitempty"`
+	Comment    string  `json:"comment,omitempty"`
+	Attributes []Field `json:"attributes,omitempty"`
 }
 
 // Proc is a stored procedure.
