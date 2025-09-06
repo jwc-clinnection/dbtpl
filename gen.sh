@@ -81,6 +81,44 @@ WHERE n.nspname = %%schema string%%
   AND t.typname = %%enum string%%
 ENDSQL
 
+# postgres composite type list query
+COMMENT='{{ . }} is a composite type.'
+$DBTPLBIN query $PGDB -M -B -2 -T CompositeType -F PostgresCompositeTypes --type-comment "$COMMENT" -o $DEST $@ << ENDSQL
+SELECT
+  t.typname::varchar AS type_name,
+  n.nspname::varchar AS schema_name,
+  COALESCE(obj_description(t.oid, 'pg_type'), '')::varchar AS comment
+FROM pg_type t
+  JOIN ONLY pg_namespace n ON n.oid = t.typnamespace
+WHERE t.typtype = 'c'
+  AND t.typrelid > 0
+  AND n.nspname = %%schema string%%
+ORDER BY t.typname
+ENDSQL
+
+# postgres composite type attribute list query
+COMMENT='{{ . }} is a composite type attribute.'
+$DBTPLBIN query $PGDB -M -B -2 -T CompositeTypeAttr -F PostgresCompositeTypeAttrs --type-comment "$COMMENT" -o $DEST $@ << ENDSQL
+SELECT
+  a.attnum::integer AS field_ordinal,
+  a.attname::varchar AS attr_name,
+  format_type(a.atttypid, a.atttypmod)::varchar AS data_type,
+  a.attnotnull::boolean AS not_null,
+  COALESCE(d.description, '')::varchar AS comment
+FROM pg_attribute a
+  JOIN pg_type t ON t.typrelid = a.attrelid
+  JOIN ONLY pg_namespace n ON n.oid = t.typnamespace
+  LEFT JOIN pg_description d ON d.objoid = a.attrelid
+    AND d.objsubid = a.attnum
+WHERE t.typtype = 'c'
+  AND t.typrelid > 0
+  AND n.nspname = %%schema string%%
+  AND t.typname = %%type_name string%%
+  AND a.attisdropped = false
+  AND a.attnum > 0
+ORDER BY a.attnum
+ENDSQL
+
 # postgres proc list query
 COMMENT='{{ . }} is a stored procedure.'
 $DBTPLBIN query $PGDB -M -B -2 -T Proc -F PostgresProcs --type-comment "$COMMENT" -o $DEST $@ << ENDSQL
