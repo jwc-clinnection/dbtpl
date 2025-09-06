@@ -723,7 +723,19 @@ func overloadedName(sqlTypes []string, proc Proc) string {
 }
 
 func convertField(ctx context.Context, tf transformFunc, f xo.Field) (Field, error) {
-	typ, zero, err := goType(ctx, f.Type)
+	// Use context-aware type resolution for PostgreSQL
+	driver, _, schema := xo.DriverDbSchema(ctx) // FIXED: Proper 3-value assignment
+	var typ, zero string
+	var err error
+
+	if driver == "postgres" {
+		// Use context-aware PostgreSQL type resolution for composite type support
+		typ, zero, err = loader.PostgresGoTypeWithContext(ctx, f.Type, schema, Int32(ctx))
+	} else {
+		// Use standard type resolution for other databases
+		typ, zero, err = goType(ctx, f.Type)
+	}
+
 	if err != nil {
 		return Field{}, err
 	}
@@ -1968,6 +1980,129 @@ func (f *Funcs) colname(z Field) string {
 	return z.SQLName
 }
 
+// compositeTypeName generates the Go type name for a composite type, handling nullable vs non-nullable.
+func (f *Funcs) compositeTypeName(ct CompositeType) string {
+	if ct.Nullable {
+		return "*" + ct.GoName
+	}
+	return ct.GoName
+}
+
+// compositeZeroValue generates the zero value for a composite type.
+func (f *Funcs) compositeZeroValue(ct CompositeType) string {
+	if ct.Nullable {
+		return "nil"
+	}
+	return ct.GoName + "{}"
+}
+
+// compositeFieldList generates field definitions for composite struct.
+func (f *Funcs) compositeFieldList(ct CompositeType) ([]string, error) {
+	var fields []string
+	for _, field := range ct.Fields {
+		fieldDef, err := f.field(field)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, fieldDef)
+	}
+	return fields, nil
+}
+
+// compositeParseFields generates field parsing logic for Scan method.
+func (f *Funcs) compositeParseFields(ct CompositeType) []string {
+	var parseLogic []string
+	for i, field := range ct.Fields {
+		parseLogic = append(parseLogic, f.generateFieldParseLogic(field, i))
+	}
+	return parseLogic
+}
+
+// generateFieldParseLogic creates parsing logic for individual fields.
+func (f *Funcs) generateFieldParseLogic(field Field, position int) string {
+	switch {
+	case strings.Contains(field.Type, "sql.Null"):
+		return fmt.Sprintf(`
+		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+			if err := %s.%s.Scan(parts[%d]); err != nil {
+				return fmt.Errorf("scanning field %s: %%w", err)
+			}
+		}`, position, position, position, f.short("ct"), field.GoName, position, field.SQLName)
+	case field.Type == "string":
+		return fmt.Sprintf(`
+		if len(parts) > %d && parts[%d] != "NULL" {
+			%s.%s = strings.Trim(parts[%d], "\"")
+		}`, position, position, f.short("ct"), field.GoName, position)
+	case strings.HasPrefix(field.Type, "int"):
+		return fmt.Sprintf(`
+		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+			if val, err := strconv.ParseInt(parts[%d], 10, 64); err != nil {
+				return fmt.Errorf("parsing %s as int: %%w", err)
+			} else {
+				%s.%s = %s(val)
+			}
+		}`, position, position, position, position, field.SQLName, f.short("ct"), field.GoName, field.Type)
+	case strings.HasPrefix(field.Type, "float"):
+		return fmt.Sprintf(`
+		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+			if val, err := strconv.ParseFloat(parts[%d], 64); err != nil {
+				return fmt.Errorf("parsing %s as float: %%w", err)
+			} else {
+				%s.%s = %s(val)
+			}
+		}`, position, position, position, position, field.SQLName, f.short("ct"), field.GoName, field.Type)
+	case field.Type == "bool":
+		return fmt.Sprintf(`
+		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+			%s.%s = parts[%d] == "t" || parts[%d] == "true"
+		}`, position, position, position, f.short("ct"), field.GoName, position, position)
+	default:
+		// Handle composite types and other custom types
+		return fmt.Sprintf(`
+		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+			if err := %s.%s.Scan(parts[%d]); err != nil {
+				return fmt.Errorf("scanning field %s: %%w", err)
+			}
+		}`, position, position, position, f.short("ct"), field.GoName, position, field.SQLName)
+	}
+}
+
+// compositeValueFields generates field value logic for Value method.
+func (f *Funcs) compositeValueFields(ct CompositeType) []string {
+	var valueLogic []string
+	for _, field := range ct.Fields {
+		valueLogic = append(valueLogic, f.generateFieldValueLogic(field))
+	}
+	return valueLogic
+}
+
+// generateFieldValueLogic creates value logic for individual fields.
+func (f *Funcs) generateFieldValueLogic(field Field) string {
+	switch {
+	case strings.Contains(field.Type, "sql.Null"):
+		return fmt.Sprintf(`
+		var %sVal string
+		if %s.%s.Valid {
+			if v, err := %s.%s.Value(); err != nil {
+				return nil, fmt.Errorf("getting value for %s: %%w", err)
+			} else {
+				%sVal = fmt.Sprintf("%%v", v)
+			}
+		} else {
+			%sVal = "NULL"
+		}
+		parts = append(parts, %sVal)`,
+			field.GoName, f.short("ct"), field.GoName, f.short("ct"), field.GoName, field.SQLName,
+			field.GoName, field.GoName, field.GoName)
+	case field.Type == "string":
+		return fmt.Sprintf(`parts = append(parts, fmt.Sprintf("\"%%s\"", %s.%s))`, f.short("ct"), field.GoName)
+	case strings.HasPrefix(field.Type, "time.Time"):
+		return fmt.Sprintf(`parts = append(parts, %s.%s.Format("2006-01-02T15:04:05.999999"))`, f.short("ct"), field.GoName)
+	default:
+		return fmt.Sprintf(`parts = append(parts, fmt.Sprintf("%%v", %s.%s))`, f.short("ct"), field.GoName)
+	}
+}
+
 func checkName(name string) string {
 	if n, ok := goReservedNames[name]; ok {
 		return n
@@ -2268,6 +2403,24 @@ type Enum struct {
 	SQLName string
 	Values  []EnumValue
 	Comment string
+}
+
+// CompositeType is a composite type template.
+type CompositeType struct {
+	GoName   string  `json:"go_name"`
+	SQLName  string  `json:"sql_name"`
+	Schema   string  `json:"schema"`
+	Fields   []Field `json:"fields"`
+	Comment  string  `json:"comment"`
+	Nullable bool    `json:"nullable"`
+}
+
+// CompositeField represents a field within a composite type with additional metadata.
+type CompositeField struct {
+	Field
+	IsComposite bool   `json:"is_composite"` // true if this field is also a composite type
+	Position    int    `json:"position"`     // position in composite type definition
+	ParseFunc   string `json:"parse_func"`   // function name for parsing this field from string
 }
 
 // Proc is a stored procedure template.
