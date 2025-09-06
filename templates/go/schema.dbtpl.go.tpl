@@ -433,3 +433,50 @@ func ({{ short $t }} *{{ $t.GoName }}) Deleted() bool {
 {{- end -}}
 {{- end }}
 {{ end }}
+
+{{ define "composite" }}
+{{- $c := .Data -}}
+// {{ $c.GoName }} is the '{{ $c.SQLName }}' composite type from schema '{{ schema }}'.
+type {{ $c.GoName }} struct {
+{{ range $c.Fields -}}
+    {{ field . }}
+{{ end -}}
+}
+
+// Scan satisfies the [sql.Scanner] interface.
+func ({{ short $c.GoName }} *{{ $c.GoName }}) Scan(v any) error {
+    if v == nil {
+        return nil
+    }
+
+    s, ok := v.(string)
+    if !ok {
+        return fmt.Errorf("cannot scan %T into {{ $c.GoName }}", v)
+    }
+
+    // Parse PostgreSQL composite type format: (field1,field2,...)
+    s = strings.TrimPrefix(s, "(")
+    s = strings.TrimSuffix(s, ")")
+
+    // TODO: Implement proper CSV parsing with escaping
+    parts := strings.Split(s, ",")
+
+{{ range $i, $field := $c.Fields -}}
+    // Parse field {{ $field.GoName }}
+    {{ compositeParseField $field $i }}
+{{ end -}}
+
+    return nil
+}
+
+// Value satisfies the [driver.Valuer] interface.
+func ({{ short $c.GoName }} {{ $c.GoName }}) Value() (driver.Value, error) {
+    var parts []string
+
+{{ range $c.Fields -}}
+    {{ compositeValueField . }}
+{{ end -}}
+
+    return "(" + strings.Join(parts, ",") + ")", nil
+}
+{{ end }}
