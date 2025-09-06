@@ -1,5 +1,3 @@
-//go:build dbtpl
-
 package gotpl
 
 import (
@@ -222,7 +220,7 @@ func Init(ctx context.Context, f func(xo.TemplateType)) error {
 			case "query":
 				return append(base, "typedef", "query")
 			case "schema":
-				return append(base, "enum", "proc", "typedef", "query", "index", "foreignkey")
+				return append(base, "enum", "composite", "proc", "typedef", "query", "index", "foreignkey")
 			}
 			return nil
 		},
@@ -338,6 +336,11 @@ func fileNames(ctx context.Context, mode string, set *xo.Set) (map[string]bool, 
 			for _, e := range schema.Enums {
 				addFile(camelExport(e.Name))
 			}
+			// ADD THIS BLOCK FOR COMPOSITE TYPES
+			for _, ct := range schema.CompositeTypes {
+				addFile(camelExport(ct.Name))
+			}
+			// END OF ADDITION
 			for _, p := range schema.Procs {
 				goName := camelExport(p.Name)
 				if p.Type == "function" {
@@ -555,7 +558,45 @@ func emitSchema(ctx context.Context, schema xo.Schema, emit func(xo.Template)) e
 			})
 		}
 	}
+
+	// emite composite types
+	for _, ct := range schema.CompositeTypes {
+		composite, err := convertCompositeType(ctx, ct)
+		if err != nil {
+			return err
+		}
+		emit(xo.Template{
+			Partial:  "composite",
+			Dest:     strings.ToLower(composite.GoName) + ext,
+			SortName: composite.GoName,
+			Data:     composite,
+		})
+	}
 	return nil
+}
+
+// convertCompositeType converts a xo.CompositeType.
+func convertCompositeType(ctx context.Context, ct xo.CompositeType) (CompositeType, error) {
+	// Note: ct is xo.CompositeType (from types package)
+	// Return value is CompositeType (from templates/go/go.go)
+
+	var fields []Field
+	for _, attr := range ct.Attributes { // ct.Attributes not ct.Fields
+		field, err := convertField(ctx, camelExport, attr)
+		if err != nil {
+			return CompositeType{}, err
+		}
+		fields = append(fields, field)
+	}
+
+	return CompositeType{ // This is the template CompositeType
+		GoName:   camelExport(ct.Name),
+		SQLName:  ct.Name,
+		Schema:   ct.Schema,
+		Fields:   fields, // Not Attributes
+		Comment:  ct.Comment,
+		Nullable: false,
+	}, nil
 }
 
 // convertEnum converts a xo.Enum.
@@ -1947,6 +1988,8 @@ func (f *Funcs) short(v any) string {
 		n = x
 	case Table:
 		n = x.GoName
+	case CompositeType: // ADD THIS LINE
+		n = x.GoName // ADD THIS LINE
 	default:
 		return fmt.Sprintf("[[ UNSUPPORTED TYPE 30: %T ]]", v)
 	}
