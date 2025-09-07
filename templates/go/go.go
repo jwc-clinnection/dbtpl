@@ -948,10 +948,23 @@ func (f *Funcs) FuncMap() template.FuncMap {
 		// sqlstr funcs
 		"querystr": f.querystr,
 		"sqlstr":   f.sqlstr,
+		// composites
+		"compositeParseField": f.compositeParseField,
+		"compositeValueField": f.compositeValueField,
 		// helpers
 		"check_name": checkName,
 		"eval":       eval,
 	}
+}
+
+// compositeParseField generates parsing logic for a single field in a composite type
+func (f *Funcs) compositeParseField(field Field, position int) string {
+	return f.generateFieldParseLogic(field, position)
+}
+
+// compositeValueField generates value logic for a single field in a composite type
+func (f *Funcs) compositeValueField(field Field) string {
+	return f.generateFieldValueLogic(field)
 }
 
 func (f *Funcs) firstfn() bool {
