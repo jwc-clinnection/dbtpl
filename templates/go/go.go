@@ -2068,6 +2068,7 @@ func (f *Funcs) compositeFieldList(ct CompositeType) ([]string, error) {
 // generateFieldParseLogic creates parsing logic for individual fields.
 func (f *Funcs) generateFieldParseLogic(field Field, position int, gn string) string {
 	sn := f.short(gn)
+
 	switch {
 	case strings.Contains(field.Type, "sql.Null"):
 		return fmt.Sprintf(`
@@ -2075,12 +2076,21 @@ func (f *Funcs) generateFieldParseLogic(field Field, position int, gn string) st
 			if err := %s.%s.Scan(parts[%d]); err != nil {
 				return fmt.Errorf("scanning field %s: %%w", err)
 			}
-		}`, position, position, position, f.short(sn), field.GoName, position, field.SQLName)
+		}`, position, position, position, sn, field.GoName, position, field.SQLName)
+
 	case field.Type == "string":
 		return fmt.Sprintf(`
 		if len(parts) > %d && parts[%d] != "NULL" {
-			%s.%s = strings.Trim(parts[%d], "\"")
-		}`, position, position, f.short(sn), field.GoName, position)
+			// Remove quotes if present
+			val := parts[%d]
+			if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+				val = val[1 : len(val)-1]
+				// Unescape doubled quotes
+				val = strings.ReplaceAll(val, "\"\"", "\"")
+			}
+			%s.%s = val
+		}`, position, position, position, sn, field.GoName)
+
 	case strings.HasPrefix(field.Type, "int"):
 		return fmt.Sprintf(`
 		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
@@ -2089,7 +2099,8 @@ func (f *Funcs) generateFieldParseLogic(field Field, position int, gn string) st
 			} else {
 				%s.%s = %s(val)
 			}
-		}`, position, position, position, position, field.SQLName, f.short(sn), field.GoName, field.Type)
+		}`, position, position, position, position, field.SQLName, sn, field.GoName, field.Type)
+
 	case strings.HasPrefix(field.Type, "float"):
 		return fmt.Sprintf(`
 		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
@@ -2098,26 +2109,130 @@ func (f *Funcs) generateFieldParseLogic(field Field, position int, gn string) st
 			} else {
 				%s.%s = %s(val)
 			}
-		}`, position, position, position, position, field.SQLName, f.short(sn), field.GoName, field.Type)
+		}`, position, position, position, position, field.SQLName, sn, field.GoName, field.Type)
+
 	case field.Type == "bool":
 		return fmt.Sprintf(`
 		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
-			%s.%s = parts[%d] == "t" || parts[%d] == "true"
-		}`, position, position, position, f.short(sn), field.GoName, position, position)
+			%s.%s = parts[%d] == "t" || parts[%d] == "true" || parts[%d] == "1"
+		}`, position, position, position, sn, field.GoName, position, position, position)
+
+	case strings.HasPrefix(field.Type, "time.Time"):
+		return fmt.Sprintf(`
+		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+			if val, err := time.Parse("2006-01-02T15:04:05.999999", parts[%d]); err != nil {
+				// Try alternative formats
+				if val, err = time.Parse("2006-01-02 15:04:05", parts[%d]); err != nil {
+					if val, err = time.Parse("2006-01-02", parts[%d]); err != nil {
+						return fmt.Errorf("parsing %s as time: %%w", err)
+					}
+				}
+			}
+			%s.%s = val
+		}`, position, position, position, position, position, position, field.SQLName, sn, field.GoName)
+
+	case strings.HasPrefix(field.Type, "[]byte"):
+		return fmt.Sprintf(`
+		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+			// Handle hex encoding for bytea
+			val := parts[%d]
+			if strings.HasPrefix(val, "\\x") {
+				val = val[2:] // Remove \x prefix
+			}
+			if decoded, err := hex.DecodeString(val); err != nil {
+				return fmt.Errorf("parsing %s as bytes: %%w", err)
+			} else {
+				%s.%s = decoded
+			}
+		}`, position, position, position, position, field.SQLName, sn, field.GoName)
+
+	case f.isCompositeType(field.Type):
+		// Handle nested composite types
+		baseType := strings.TrimPrefix(field.Type, "*") // Remove pointer prefix if present
+		return fmt.Sprintf(`
+		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+			var %sVal %s
+			if err := %sVal.Scan(parts[%d]); err != nil {
+				return fmt.Errorf("scanning composite field %s: %%w", err)
+			}
+			%s.%s = %sVal
+		}`, position, position, position, field.GoName, baseType, field.GoName, position, field.SQLName, sn, field.GoName, field.GoName)
+
+	case strings.HasPrefix(field.Type, "[]") && f.isCompositeType(strings.TrimPrefix(field.Type, "[]")):
+		// Handle arrays of composite types
+		elementType := strings.TrimPrefix(field.Type, "[]")
+		return fmt.Sprintf(`
+		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+			// Parse PostgreSQL array format
+			arrStr := parts[%d]
+			if strings.HasPrefix(arrStr, "{") && strings.HasSuffix(arrStr, "}") {
+				arrStr = arrStr[1 : len(arrStr)-1] // Remove {}
+				if arrStr != "" {
+					arrParts := strings.Split(arrStr, ",")
+					%s.%s = make([]%s, len(arrParts))
+					for i, part := range arrParts {
+						var elem %s
+						if err := elem.Scan(strings.TrimSpace(part)); err != nil {
+							return fmt.Errorf("scanning array element %%d of %s: %%w", i, err)
+						}
+						%s.%s[i] = elem
+					}
+				}
+			}
+		}`, position, position, position, position, sn, field.GoName, elementType, elementType, field.SQLName, sn, field.GoName)
+
 	default:
-		// Handle composite types and other custom types
+		// Handle other types that implement sql.Scanner
 		return fmt.Sprintf(`
 		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
 			if err := %s.%s.Scan(parts[%d]); err != nil {
 				return fmt.Errorf("scanning field %s: %%w", err)
 			}
-		}`, position, position, position, f.short(sn), field.GoName, position, field.SQLName)
+		}`, position, position, position, sn, field.GoName, position, field.SQLName)
 	}
+}
+
+// isCompositeType checks if a type is a composite type
+func (f *Funcs) isCompositeType(typeName string) bool {
+	// Remove pointer prefix and array prefix for checking
+	cleanType := typeName
+	if strings.HasPrefix(cleanType, "*") {
+		cleanType = cleanType[1:]
+	}
+	if strings.HasPrefix(cleanType, "[]") {
+		cleanType = cleanType[2:]
+	}
+
+	// Check if it's a basic Go type
+	basicTypes := map[string]bool{
+		"string": true, "int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+		"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+		"float32": true, "float64": true, "bool": true, "byte": true, "rune": true,
+		"time.Time": true, "sql.NullString": true, "sql.NullInt64": true, "sql.NullFloat64": true,
+		"sql.NullBool": true, "sql.NullTime": true,
+	}
+
+	if basicTypes[cleanType] {
+		return false
+	}
+
+	// Check if it contains dots (package qualified) - likely not composite
+	if strings.Contains(cleanType, ".") && !strings.HasPrefix(cleanType, f.pkg+".") {
+		return false
+	}
+
+	// If it starts with uppercase and is not a basic type, assume composite
+	if len(cleanType) > 0 && cleanType[0] >= 'A' && cleanType[0] <= 'Z' {
+		return true
+	}
+
+	return false
 }
 
 // generateFieldValueLogic creates value logic for individual fields.
 func (f *Funcs) generateFieldValueLogic(field Field, gn string) string {
 	sn := f.short(gn)
+
 	switch {
 	case strings.Contains(field.Type, "sql.Null"):
 		return fmt.Sprintf(`
@@ -2132,14 +2247,50 @@ func (f *Funcs) generateFieldValueLogic(field Field, gn string) string {
 			%sVal = "NULL"
 		}
 		parts = append(parts, %sVal)`,
-			field.GoName, f.short(sn), field.GoName, f.short(sn), field.GoName, field.SQLName,
+			field.GoName, sn, field.GoName, sn, field.GoName, field.SQLName,
 			field.GoName, field.GoName, field.GoName)
+
 	case field.Type == "string":
-		return fmt.Sprintf(`parts = append(parts, fmt.Sprintf("\"%%s\"", %s.%s))`, f.short(sn), field.GoName)
+		return fmt.Sprintf(`
+		// Escape quotes and wrap in quotes for string values
+		escaped := strings.ReplaceAll(%s.%s, "\"", "\"\"")
+		parts = append(parts, fmt.Sprintf("\"%%s\"", escaped))`, sn, field.GoName)
+
 	case strings.HasPrefix(field.Type, "time.Time"):
-		return fmt.Sprintf(`parts = append(parts, %s.%s.Format("2006-01-02T15:04:05.999999"))`, f.short(sn), field.GoName)
+		return fmt.Sprintf(`
+		parts = append(parts, %s.%s.Format("2006-01-02T15:04:05.999999"))`, sn, field.GoName)
+
+	case strings.HasPrefix(field.Type, "[]byte"):
+		return fmt.Sprintf(`
+		// Format bytes as hex string
+		parts = append(parts, fmt.Sprintf("\\x%%x", %s.%s))`, sn, field.GoName)
+
+	case f.isCompositeType(field.Type):
+		// Handle composite types
+		return fmt.Sprintf(`
+		if val, err := %s.%s.Value(); err != nil {
+			return nil, fmt.Errorf("getting value for composite field %s: %%w", err)
+		} else {
+			parts = append(parts, fmt.Sprintf("%%v", val))
+		}`, sn, field.GoName, field.SQLName)
+
+	case strings.HasPrefix(field.Type, "[]") && f.isCompositeType(strings.TrimPrefix(field.Type, "[]")):
+		// Handle arrays of composite types
+		return fmt.Sprintf(`
+		// Format array of composite types
+		var arrParts []string
+		for _, elem := range %s.%s {
+			if val, err := elem.Value(); err != nil {
+				return nil, fmt.Errorf("getting value for array element in %s: %%w", err)
+			} else {
+				arrParts = append(arrParts, fmt.Sprintf("%%v", val))
+			}
+		}
+		parts = append(parts, fmt.Sprintf("{%%s}", strings.Join(arrParts, ",")))`, sn, field.GoName, field.SQLName)
+
 	default:
-		return fmt.Sprintf(`parts = append(parts, fmt.Sprintf("%%v", %s.%s))`, f.short(sn), field.GoName)
+		return fmt.Sprintf(`
+		parts = append(parts, fmt.Sprintf("%%v", %s.%s))`, sn, field.GoName)
 	}
 }
 

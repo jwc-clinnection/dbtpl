@@ -454,12 +454,15 @@ func ({{ short $p.GoName }} *{{ $p.GoName }}) Scan(v any) error {
         return fmt.Errorf("cannot scan %T into {{ $p.GoName }}", v)
     }
 
-    // Parse PostgreSQL composite type format: (field1,field2,...)
+// Parse PostgreSQL composite type format: (field1,field2,...)
     s = strings.TrimPrefix(s, "(")
     s = strings.TrimSuffix(s, ")")
 
-    // TODO: Implement proper CSV parsing with escaping
-    parts := strings.Split(s, ",")
+    // Parse composite fields using CSV reader for proper escaping
+    parts, err := parseCompositeFields(s)
+    if err != nil {
+        return fmt.Errorf("parsing composite type fields: %w", err)
+    }
 
 {{ range $i, $field := $p.Fields -}}
     // Parse field {{ $field.GoName }}
@@ -480,4 +483,27 @@ func ({{ short $p.GoName }} {{ $p.GoName }}) Value() (driver.Value, error) {
     return "(" + strings.Join(parts, ",") + ")", nil
 }
 // --- End of composite type {{ $p.GoName }} ---
+
+// parseCompositeFields parses PostgreSQL composite type field values
+// handling proper escaping, quotes, and nested composites.
+func parseCompositeFields(s string) ([]string, error) {
+    if s == "" {
+        return []string{}, nil
+    }
+
+    // Use CSV reader for proper parsing of quoted/escaped values
+    reader := csv.NewReader(strings.NewReader(s))
+    reader.Comma = ','
+    reader.Quote = '"'
+    reader.LazyQuotes = true  // Allow malformed quotes for PostgreSQL compatibility
+    reader.TrimLeadingSpace = true
+
+    record, err := reader.Read()
+    if err != nil && err != io.EOF {
+        return nil, fmt.Errorf("parsing CSV fields: %w", err)
+    }
+
+    return record, nil
+}
+
 {{ end }}
