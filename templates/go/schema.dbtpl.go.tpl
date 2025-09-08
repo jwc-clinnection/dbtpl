@@ -435,23 +435,23 @@ func ({{ short $t }} *{{ $t.GoName }}) Deleted() bool {
 {{ end }}
 
 {{ define "composite" }}
-{{- $c := .Data -}}
-// {{ $c.GoName }} is the '{{ $c.SQLName }}' composite type from schema '{{ schema }}'.
-type {{ $c.GoName }} struct {
-{{ range $c.Fields -}}
+{{- $p := .Data -}}
+// --- {{ $p.GoName }} is the '{{ $p.SQLName }}' composite type from schema '{{ schema }}'.
+type {{ $p.GoName }} struct {
+{{ range $p.Fields -}}
     {{ field . }}
 {{ end -}}
 }
 
 // Scan satisfies the [sql.Scanner] interface.
-func ({{ short $c.GoName }} *{{ $c.GoName }}) Scan(v any) error {
+func ({{ short $p.GoName }} *{{ $p.GoName }}) Scan(v any) error {
     if v == nil {
         return nil
     }
 
     s, ok := v.(string)
     if !ok {
-        return fmt.Errorf("cannot scan %T into {{ $c.GoName }}", v)
+        return fmt.Errorf("cannot scan %T into {{ $p.GoName }}", v)
     }
 
     // Parse PostgreSQL composite type format: (field1,field2,...)
@@ -461,22 +461,23 @@ func ({{ short $c.GoName }} *{{ $c.GoName }}) Scan(v any) error {
     // TODO: Implement proper CSV parsing with escaping
     parts := strings.Split(s, ",")
 
-{{ range $i, $field := $c.Fields -}}
+{{ range $i, $field := $p.Fields -}}
     // Parse field {{ $field.GoName }}
-    {{ compositeParseField $field $i }}
+    {{ compositeParseField $field $i  $p.GoName  }}
 {{ end -}}
 
     return nil
 }
 
 // Value satisfies the [driver.Valuer] interface.
-func ({{ short $c.GoName }} {{ $c.GoName }}) Value() (driver.Value, error) {
+func ({{ short $p.GoName }} {{ $p.GoName }}) Value() (driver.Value, error) {
     var parts []string
 
-{{ range $c.Fields -}}
-    {{ compositeValueField . }}
+{{ range $p.Fields -}}
+    {{ compositeValueField . $p.GoName }}
 {{ end -}}
 
     return "(" + strings.Join(parts, ",") + ")", nil
 }
+// --- End of composite type {{ $p.GoName }} ---
 {{ end }}

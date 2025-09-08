@@ -958,13 +958,13 @@ func (f *Funcs) FuncMap() template.FuncMap {
 }
 
 // compositeParseField generates parsing logic for a single field in a composite type
-func (f *Funcs) compositeParseField(field Field, position int) string {
-	return f.generateFieldParseLogic(field, position)
+func (f *Funcs) compositeParseField(field Field, position int, gn string) string {
+	return f.generateFieldParseLogic(field, position, gn)
 }
 
 // compositeValueField generates value logic for a single field in a composite type
-func (f *Funcs) compositeValueField(field Field) string {
-	return f.generateFieldValueLogic(field)
+func (f *Funcs) compositeValueField(field Field, gn string) string {
+	return f.generateFieldValueLogic(field, gn)
 }
 
 func (f *Funcs) firstfn() bool {
@@ -2065,17 +2065,9 @@ func (f *Funcs) compositeFieldList(ct CompositeType) ([]string, error) {
 	return fields, nil
 }
 
-// compositeParseFields generates field parsing logic for Scan method.
-func (f *Funcs) compositeParseFields(ct CompositeType) []string {
-	var parseLogic []string
-	for i, field := range ct.Fields {
-		parseLogic = append(parseLogic, f.generateFieldParseLogic(field, i))
-	}
-	return parseLogic
-}
-
 // generateFieldParseLogic creates parsing logic for individual fields.
-func (f *Funcs) generateFieldParseLogic(field Field, position int) string {
+func (f *Funcs) generateFieldParseLogic(field Field, position int, gn string) string {
+	sn := f.short(gn)
 	switch {
 	case strings.Contains(field.Type, "sql.Null"):
 		return fmt.Sprintf(`
@@ -2083,12 +2075,12 @@ func (f *Funcs) generateFieldParseLogic(field Field, position int) string {
 			if err := %s.%s.Scan(parts[%d]); err != nil {
 				return fmt.Errorf("scanning field %s: %%w", err)
 			}
-		}`, position, position, position, f.short("ct"), field.GoName, position, field.SQLName)
+		}`, position, position, position, f.short(sn), field.GoName, position, field.SQLName)
 	case field.Type == "string":
 		return fmt.Sprintf(`
 		if len(parts) > %d && parts[%d] != "NULL" {
 			%s.%s = strings.Trim(parts[%d], "\"")
-		}`, position, position, f.short("ct"), field.GoName, position)
+		}`, position, position, f.short(sn), field.GoName, position)
 	case strings.HasPrefix(field.Type, "int"):
 		return fmt.Sprintf(`
 		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
@@ -2097,7 +2089,7 @@ func (f *Funcs) generateFieldParseLogic(field Field, position int) string {
 			} else {
 				%s.%s = %s(val)
 			}
-		}`, position, position, position, position, field.SQLName, f.short("ct"), field.GoName, field.Type)
+		}`, position, position, position, position, field.SQLName, f.short(sn), field.GoName, field.Type)
 	case strings.HasPrefix(field.Type, "float"):
 		return fmt.Sprintf(`
 		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
@@ -2106,12 +2098,12 @@ func (f *Funcs) generateFieldParseLogic(field Field, position int) string {
 			} else {
 				%s.%s = %s(val)
 			}
-		}`, position, position, position, position, field.SQLName, f.short("ct"), field.GoName, field.Type)
+		}`, position, position, position, position, field.SQLName, f.short(sn), field.GoName, field.Type)
 	case field.Type == "bool":
 		return fmt.Sprintf(`
 		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
 			%s.%s = parts[%d] == "t" || parts[%d] == "true"
-		}`, position, position, position, f.short("ct"), field.GoName, position, position)
+		}`, position, position, position, f.short(sn), field.GoName, position, position)
 	default:
 		// Handle composite types and other custom types
 		return fmt.Sprintf(`
@@ -2119,21 +2111,13 @@ func (f *Funcs) generateFieldParseLogic(field Field, position int) string {
 			if err := %s.%s.Scan(parts[%d]); err != nil {
 				return fmt.Errorf("scanning field %s: %%w", err)
 			}
-		}`, position, position, position, f.short("ct"), field.GoName, position, field.SQLName)
+		}`, position, position, position, f.short(sn), field.GoName, position, field.SQLName)
 	}
-}
-
-// compositeValueFields generates field value logic for Value method.
-func (f *Funcs) compositeValueFields(ct CompositeType) []string {
-	var valueLogic []string
-	for _, field := range ct.Fields {
-		valueLogic = append(valueLogic, f.generateFieldValueLogic(field))
-	}
-	return valueLogic
 }
 
 // generateFieldValueLogic creates value logic for individual fields.
-func (f *Funcs) generateFieldValueLogic(field Field) string {
+func (f *Funcs) generateFieldValueLogic(field Field, gn string) string {
+	sn := f.short(gn)
 	switch {
 	case strings.Contains(field.Type, "sql.Null"):
 		return fmt.Sprintf(`
@@ -2148,14 +2132,14 @@ func (f *Funcs) generateFieldValueLogic(field Field) string {
 			%sVal = "NULL"
 		}
 		parts = append(parts, %sVal)`,
-			field.GoName, f.short("ct"), field.GoName, f.short("ct"), field.GoName, field.SQLName,
+			field.GoName, f.short(sn), field.GoName, f.short(sn), field.GoName, field.SQLName,
 			field.GoName, field.GoName, field.GoName)
 	case field.Type == "string":
-		return fmt.Sprintf(`parts = append(parts, fmt.Sprintf("\"%%s\"", %s.%s))`, f.short("ct"), field.GoName)
+		return fmt.Sprintf(`parts = append(parts, fmt.Sprintf("\"%%s\"", %s.%s))`, f.short(sn), field.GoName)
 	case strings.HasPrefix(field.Type, "time.Time"):
-		return fmt.Sprintf(`parts = append(parts, %s.%s.Format("2006-01-02T15:04:05.999999"))`, f.short("ct"), field.GoName)
+		return fmt.Sprintf(`parts = append(parts, %s.%s.Format("2006-01-02T15:04:05.999999"))`, f.short(sn), field.GoName)
 	default:
-		return fmt.Sprintf(`parts = append(parts, fmt.Sprintf("%%v", %s.%s))`, f.short("ct"), field.GoName)
+		return fmt.Sprintf(`parts = append(parts, fmt.Sprintf("%%v", %s.%s))`, f.short(sn), field.GoName)
 	}
 }
 
