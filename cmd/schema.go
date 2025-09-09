@@ -97,8 +97,7 @@ func loadEnumValues(ctx context.Context, _ *Args, enum *xo.Enum) error {
 	}
 	return nil
 }
-
-// loadCompositeTypes loads composite types.
+// loadCompositeTypes loads composite types, filter out table types.
 func loadCompositeTypes(ctx context.Context, args *Args) ([]xo.CompositeType, error) {
 	// load composite types
 	compositeTypes, err := loader.CompositeTypes(ctx)
@@ -109,13 +108,37 @@ func loadCompositeTypes(ctx context.Context, args *Args) ([]xo.CompositeType, er
 		return nil, nil // Not supported for this database type
 	}
 
+	// Get list of table and view names to filter out auto-generated composite types
+	tables, err := loader.Tables(ctx, "table")
+	if err != nil {
+		return nil, err
+	}
+	views, err := loader.Tables(ctx, "view")
+	if err != nil {
+		return nil, err
+	}
+
+	// Build map of table/view names to exclude
+	excludeNames := make(map[string]bool)
+	for _, table := range tables {
+		excludeNames[table.TableName] = true
+	}
+	for _, view := range views {
+		excludeNames[view.TableName] = true
+	}
+
 	sort.Slice(compositeTypes, func(i, j int) bool {
 		return compositeTypes[i].TypeName < compositeTypes[j].TypeName
 	})
 
-	// process composite types
+	// process composite types, excluding table-based ones
 	var composites []xo.CompositeType
 	for _, ct := range compositeTypes {
+		// Skip composite types that correspond to tables/views
+		if excludeNames[ct.TypeName] {
+			continue
+		}
+
 		if !validType(args, false, ct.TypeName) {
 			continue
 		}
