@@ -2148,15 +2148,28 @@ func (f *Funcs) generateFieldParseLogic(field Field, position int, gn string) st
 
 	case f.isCompositeType(field.Type):
 		// Handle nested composite types
-		baseType := strings.TrimPrefix(field.Type, "*") // Remove pointer prefix if present
-		return fmt.Sprintf(`
-		if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
-			var %sVal %s
-			if err := %sVal.Scan(parts[%d]); err != nil {
-				return fmt.Errorf("scanning composite field %s: %%w", err)
-			}
-			%s.%s = %sVal
-		}`, position, position, position, field.GoName, baseType, field.GoName, position, field.SQLName, sn, field.GoName, field.GoName)
+		baseType := strings.TrimPrefix(field.Type, "*")
+		isPointer := strings.HasPrefix(field.Type, "*")
+
+		if isPointer {
+			return fmt.Sprintf(`
+        if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+            var %sVal %s
+            if err := %sVal.Scan(parts[%d]); err != nil {
+                return fmt.Errorf("scanning composite field %s: %%w", err)
+            }
+            %s.%s = &%sVal  // Fixed: take address for pointer assignment
+        }`, position, position, position, field.GoName, baseType, field.GoName, position, field.SQLName, sn, field.GoName, field.GoName)
+		} else {
+			return fmt.Sprintf(`
+			if len(parts) > %d && parts[%d] != "" && parts[%d] != "NULL" {
+				var %sVal %s
+				if err := %sVal.Scan(parts[%d]); err != nil {
+					return fmt.Errorf("scanning composite field %s: %%w", err)
+				}
+				%s.%s = %sVal
+			}`, position, position, position, field.GoName, baseType, field.GoName, position, field.SQLName, sn, field.GoName, field.GoName)
+		}
 
 	case strings.HasPrefix(field.Type, "[]") && f.isCompositeType(strings.TrimPrefix(field.Type, "[]")):
 		// Handle arrays of composite types
