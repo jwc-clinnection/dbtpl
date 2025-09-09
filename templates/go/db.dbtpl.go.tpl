@@ -6,6 +6,76 @@ var (
 	errf = func(string, ...any) {}
 )
 
+// NullPoint represents a PostgreSQL POINT that may be null
+type NullPoint struct {
+    Point [2]float64 // PostgreSQL POINT as [x, y]
+    Valid bool
+}
+
+// Scan implements the sql.Scanner interface
+func (np *NullPoint) Scan(value interface{}) error {
+    if value == nil {
+        np.Valid = false
+        return nil
+    }
+
+    s, ok := value.(string)
+    if !ok {
+        return fmt.Errorf("cannot scan %T into NullPoint", value)
+    }
+
+    // Parse PostgreSQL POINT format: (x,y)
+    s = strings.TrimPrefix(s, "(")
+    s = strings.TrimSuffix(s, ")")
+
+    parts := strings.Split(s, ",")
+    if len(parts) != 2 {
+        return fmt.Errorf("invalid POINT format: %s", s)
+    }
+
+    x, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+    if err != nil {
+        return fmt.Errorf("parsing x coordinate: %w", err)
+    }
+
+    y, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+    if err != nil {
+        return fmt.Errorf("parsing y coordinate: %w", err)
+    }
+
+    np.Point = [2]float64{x, y}
+    np.Valid = true
+    return nil
+}
+
+// Value implements the driver.Valuer interface
+func (np NullPoint) Value() (driver.Value, error) {
+    if !np.Valid {
+        return nil, nil
+    }
+    return fmt.Sprintf("(%v,%v)", np.Point[0], np.Point[1]), nil
+}
+
+func parseCompositeFields(s string) ([]string, error) {
+    if s == "" {
+        return []string{}, nil
+    }
+
+    // Use CSV reader for proper parsing of quoted/escaped values
+    reader := csv.NewReader(strings.NewReader(s))
+    reader.Comma = ','
+    reader.LazyQuotes = true  // Allow malformed quotes for PostgreSQL compatibility
+    reader.TrimLeadingSpace = true
+    // Remove: reader.Quote = '"'  // THIS LINE IS INVALID
+
+    record, err := reader.Read()
+    if err != nil && err != io.EOF {
+        return nil, fmt.Errorf("parsing CSV fields: %w", err)
+    }
+
+    return record, nil
+}
+
 // logerror logs the error and returns it.
 func logerror(err error) error {
 	errf("ERROR: %v", err)

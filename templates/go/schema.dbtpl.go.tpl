@@ -484,26 +484,5 @@ func ({{ short $p.GoName }} {{ $p.GoName }}) Value() (driver.Value, error) {
 }
 // --- End of composite type {{ $p.GoName }} ---
 
-// parseCompositeFields parses PostgreSQL composite type field values
-// handling proper escaping, quotes, and nested composites.
-func parseCompositeFields(s string) ([]string, error) {
-    if s == "" {
-        return []string{}, nil
-    }
-
-    // Use CSV reader for proper parsing of quoted/escaped values
-    reader := csv.NewReader(strings.NewReader(s))
-    reader.Comma = ','
-    reader.Quote = '"'
-    reader.LazyQuotes = true  // Allow malformed quotes for PostgreSQL compatibility
-    reader.TrimLeadingSpace = true
-
-    record, err := reader.Read()
-    if err != nil && err != io.EOF {
-        return nil, fmt.Errorf("parsing CSV fields: %w", err)
-    }
-
-    return record, nil
-}
 
 {{ end }}
